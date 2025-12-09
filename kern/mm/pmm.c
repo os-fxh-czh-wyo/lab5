@@ -378,31 +378,33 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
 {
     assert(start % PGSIZE == 0 && end % PGSIZE == 0);
     assert(USER_ACCESS(start, end));
-    // copy content by page unit.
+    // 遍历父进程页表中 [start, end) 的每个虚拟页，逐页复制到子进程的页表中
     do
     {
-        // call get_pte to find process A's pte according to the addr start
+        // 在 from 页目录中查找 start 对应的 PTE，不创建下级页表（create = 0）
         pte_t *ptep = get_pte(from, start, 0), *nptep;
         if (ptep == NULL)
         {
             start = ROUNDDOWN(start + PTSIZE, PTSIZE);
             continue;
         }
-        // call get_pte to find process B's pte according to the addr start. If
-        // pte is NULL, just alloc a PT
         if (*ptep & PTE_V)
         {
+            // 在目标页目录 to 中查找/创建对应的 PTE（create = 1，会为缺失的页表分配页）
             if ((nptep = get_pte(to, start, 1)) == NULL)
             {
                 return -E_NO_MEM;
             }
+
+            // 取出源 PTE 的用户权限位，用于在目标中重建相同的权限。
             uint32_t perm = (*ptep & PTE_USER);
-            // get page from ptep
+
+            // 得到源物理页并为目标分配新页
             struct Page *page = pte2page(*ptep);
-            // alloc a page for process B
             struct Page *npage = alloc_page();
             assert(page != NULL);
             assert(npage != NULL);
+
             int ret = 0;
             /* LAB5:EXERCISE2 YOUR CODE
              * replicate content of page to npage, build the map of phy addr of
@@ -422,6 +424,12 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
              * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
              * (4) build the map of phy addr of  nage with the linear addr start
              */
+            void *src_kvaddr = page2kva(page); // Get the kernel virtual address of the source page.
+            void *dst_kvaddr = page2kva(npage); // Get the kernel virtual address of the destination page.
+
+            memcpy(dst_kvaddr, src_kvaddr, PGSIZE); // Copy the content of the source page to the destination page.
+
+            ret = page_insert(to, npage, start, perm); // Insert the destination page into the page table of the target process.
 
             assert(ret == 0);
         }
