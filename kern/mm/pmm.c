@@ -401,9 +401,7 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
 
             // 得到源物理页并为目标分配新页
             struct Page *page = pte2page(*ptep);
-            struct Page *npage = alloc_page();
             assert(page != NULL);
-            assert(npage != NULL);
 
             int ret = 0;
             /* LAB5:EXERCISE2 YOUR CODE
@@ -423,13 +421,24 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
              * (2) find dst_kvaddr: the kernel virtual address of npage
              * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
              * (4) build the map of phy addr of  nage with the linear addr start
-             */
-            void *src_kvaddr = page2kva(page); // Get the kernel virtual address of the source page.
-            void *dst_kvaddr = page2kva(npage); // Get the kernel virtual address of the destination page.
+            */
+            if(share)
+            {
+                // 物理页面共享，并设置两个PTE上的标志位为只读
+                page_insert(from, page, start, perm & ~PTE_W);
+                ret = page_insert(to, page, start, perm & ~PTE_W);
+            }
+            else{
+                //原来的复制逻辑
+                struct Page *npage = alloc_page();
+                assert(npage != NULL);
 
-            memcpy(dst_kvaddr, src_kvaddr, PGSIZE); // Copy the content of the source page to the destination page.
-
-            ret = page_insert(to, npage, start, perm); // Insert the destination page into the page table of the target process.
+                void *src_kvaddr = page2kva(page);
+                void *dst_kvaddr = page2kva(npage);
+                memcpy(dst_kvaddr, src_kvaddr, PGSIZE);
+                // 将目标页面地址设置到PTE中
+                ret = page_insert(to, npage, start, perm);
+            }
 
             assert(ret == 0);
         }
