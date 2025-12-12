@@ -17,7 +17,7 @@
 #include <sbi.h>
 #include <proc.h>
 
-#define TICK_NUM 100
+#define TICK_NUM 10
 
 static void print_ticks()
 {
