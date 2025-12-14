@@ -299,6 +299,7 @@ tf->status = (sstatus & ~SSTATUS_SPP) | SSTATUS_SPIE; // 设置处理器状态�
 
 - 生命周期图
 
+```
 PROC_UNINIT
   |  alloc_proc()
   v
@@ -330,6 +331,81 @@ ZOMBIE
   |    -> copy exit_code to user, unhash/remove_links, put_kstack, kfree(proc)
   v
 removed (resources freed)
+```
+
+### 实验结果
+
+运行make grade结果如下
+
+```
+swiftiexh@DESKTOP-C6899HL:~/labcode/lab5$ make grade
+kern/mm/kmalloc.c: In function '__slob_free_pages':
+kern/mm/kmalloc.c:92:22: warning: passing argument 1 of 'kva2page' makes pointer from integer without a cast [-Wint-conversion]
+   92 |  free_pages(kva2page(kva), 1 << order);
+      |                      ^~~
+      |                      |
+      |                      long unsigned int
+In file included from kern/mm/kmalloc.c:7:
+kern/mm/pmm.h:117:16: note: expected 'void *' but argument is of type 'long unsigned int'
+  117 | kva2page(void *kva)
+      |          ~~~~~~^~~
+In file included from kern/process/proc.c:5:
+kern/process/proc.c: In function 'do_execve':
+kern/mm/pmm.h:91:17: warning: 'page' may be used uninitialized in this function [-Wmaybe-uninitialized]
+   91 |     return page - pages + nbase;
+      |                 ^
+kern/process/proc.c:630:18: note: 'page' was declared here
+  630 |     struct Page *page;
+      |                  ^~~~
+user/testbss.c: In function 'main':
+user/testbss.c:29:13: warning: array subscript 1049600 is above array bounds of 'uint32_t[1048576]' {aka 'unsigned int[1048576]'} [-Warray-bounds]
+   29 |     bigarray[ARRAYSIZE + 1024] = 0;
+      |     ~~~~~~~~^~~~~~~~~~~~~~~~~~
+user/testbss.c:6:10: note: while referencing 'bigarray'
+    6 | uint32_t bigarray[ARRAYSIZE];
+      |          ^~~~~~~~
+gmake[1]: Entering directory '/home/swiftiexh/labcode/lab5' + cc kern/init/entry.S + cc kern/init/init.c + cc kern/libs/readline.c + cc kern/libs/stdio.c + cc kern/debug/kdebug.c + cc kern/debug/kmonitor.c + cc kern/debug/panic.c + cc kern/driver/clock.c + cc kern/driver/console.c + cc kern/driver/dtb.c + cc kern/driver/intr.c + cc kern/driver/picirq.c + cc kern/trap/trap.c + cc kern/trap/trapentry.S + cc kern/mm/default_pmm.c + cc kern/mm/kmalloc.c + cc kern/mm/pmm.c + cc kern/mm/vmm.c + cc kern/process/entry.S + cc kern/process/proc.c + cc kern/process/switch.S + cc kern/schedule/sched.c + cc kern/syscall/syscall.c + cc libs/hash.c + cc libs/printfmt.c + cc libs/rand.c + cc libs/string.c + cc user/badarg.c + cc user/libs/initcode.S + cc user/libs/panic.c + cc user/libs/stdio.c + cc user/libs/syscall.c + cc user/libs/ulib.c + cc user/libs/umain.c + cc user/badsegment.c + cc user/divzero.c + cc user/exit.c + cc user/faultread.c + cc user/faultreadkernel.c + cc user/forktest.c + cc user/forktree.c + cc user/hello.c + cc user/pgdir.c + cc user/softint.c + cc user/spin.c + cc user/testbss.c + cc user/waitkill.c + cc user/yield.c + ld bin/kernel riscv64-unknown-elf-objcopy bin/kernel --strip-all -O binary bin/ucore.img gmake[1]: Leaving directory '/home/swiftiexh/labcode/lab5'
+badsegment:              (s)
+  -check result:                             OK
+  -check output:                             OK
+divzero:                 (s)
+  -check result:                             OK
+  -check output:                             OK
+softint:                 (s)
+  -check result:                             OK
+  -check output:                             OK
+faultread:               (s)
+  -check result:                             OK
+  -check output:                             OK
+faultreadkernel:         (s)
+  -check result:                             OK
+  -check output:                             OK
+hello:                   (s)
+  -check result:                             OK
+  -check output:                             OK
+testbss:                 (s)
+  -check result:                             OK
+  -check output:                             OK
+pgdir:                   (s)
+  -check result:                             OK
+  -check output:                             OK
+yield:                   (s)
+  -check result:                             OK
+  -check output:                             OK
+badarg:                  (s)
+  -check result:                             OK
+  -check output:                             OK
+exit:                    (s)
+  -check result:                             OK
+  -check output:                             OK
+spin:                    (s)
+  -check result:                             OK
+  -check output:                             OK
+forktest:                (s)
+  -check result:                             OK
+  -check output:                             OK
+Total Score: 130/130
+```
 
 ### 扩展练习 Challenge 1 ：实现 Copy on Write （COW）机制
 
