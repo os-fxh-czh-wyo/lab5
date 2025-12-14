@@ -253,6 +253,84 @@ tf->status = (sstatus & ~SSTATUS_SPP) | SSTATUS_SPIE; // 设置处理器状态�
     
     - 设置新的中断帧（入口点、栈指针、状态）
 
+- `wait`的执行流程
+  
+  - 用户通过系统调用接口触发 `wait` 或 `waitpid`，在用户态准备系统调用参数
+  
+  - 内核态部分，`do_wait` 主要的工作有：
+    
+    - 验证参数合法性（如 `code_store` 的用户地址可写性）
+    
+    - 遍历当前进程的子进程列表（或查找指定 `pid` 的子进程），检查是否有子进程处于 `PROC_ZOMBIE` 状态
+    
+    - 若找到僵尸子进程
+
+      - 将子进程的 `exit_code` 写回用户提供的 `code_store`
+
+      - 在关中断保护区内从进程哈希表和父子链表中移除该子进程
+
+      - 释放子进程的内核资源（`put_kstack`、`kfree(proc)` 等由父进程负责真正回收）
+
+      - 返回（成功）并把结果通过 `syscall` 返回给用户态
+    
+    - 若存在子进程但无僵尸，则将当前进程置为睡眠，设置 `wait_state（WT_CHILD）`，调用 `schedule()` 阻塞，等待被唤醒后重试检查
+    
+    - 若没有任何子进程，则返回错误
+
+- `exit`的执行流程：
+  
+  - 用户通过系统调用接口触发`exit`，在用户态提供退出码并进入内核态执行退出逻辑
+  
+  - 内核态部分，`do_exit` 主要的工作有:
+    
+    - 合法性检查
+    
+    - 回收/处理用户地址空间：如果 `current->mm` 存在，切回内核页表，递减 mm 引用计数，若引用计数为 0 则释放页表和 VMA 结构，最后把 `current->mm` 置为空
+    
+    - 记录退出码并把进程状态设为 `PROC_ZOMBIE`
+    
+    - 在关中断保护区内处理父子关系：
+
+      - 若父进程在 `WT_CHILD`，唤醒父进程
+
+      - 将当前进程的所有子进程转移给 `initproc`，必要时唤醒 `initproc` 以便其回收孤儿僵尸
+    
+    - 调用 `schedule()` 切出（`do_exit` 不返回）
+
+- 生命周期图
+
+PROC_UNINIT
+  |  alloc_proc()
+  v
+RUNNABLE <------------------------------+
+  |  scheduler/proc_run/switch_to       |  (yield / need_resched -> schedule)
+  |                                     |
+  v                                     |
+RUNNING ------------------------------- +
+  |  do_sleep()/do_wait()  (set PROC_SLEEPING, wait_state) 
+  |--> SLEEPING -- wakeup_proc() --> RUNNABLE
+  |
+  |  do_yield()/need_resched -> schedule -> RUNNABLE
+  |
+  |  do_fork()  (parent RUNNING) 
+  |    -> alloc_proc/setup_kstack/copy_mm/copy_thread
+  |    -> init child.tf (a0=0), set pid, hash/set_links, wakeup_proc(child)
+  |    => child becomes RUNNABLE
+  |
+  |  do_execve()/load_icode()  (replace mm, set tf->epc/sp/status)
+  |    => process continues (returns to user with new image)
+  |
+  |  do_exit(error) 
+  |    -> release mm (if needed), set state = PROC_ZOMBIE, set exit_code,
+  |       reparent children -> initproc, wakeup parent if WT_CHILD
+  |    -> schedule() (does not return)
+  v
+ZOMBIE
+  |  parent calls do_wait()/do_waitpid()
+  |    -> copy exit_code to user, unhash/remove_links, put_kstack, kfree(proc)
+  v
+removed (resources freed)
+
 ### 扩展练习 Challenge 1 ：实现 Copy on Write （COW）机制
 
 > 给出实现源码,测试用例和设计报告（包括在cow情况下的各种状态转换（类似有限状态自动机）的说明）。
@@ -299,3 +377,17 @@ tf->status = (sstatus & ~SSTATUS_SPP) | SSTATUS_SPIE; // 设置处理器状态�
 ### 扩展练习 Challenge 2
 
 > 说明该用户程序是何时被预先加载到内存中的？与我们常用操作系统的加载有何区别，原因是什么？
+
+1. 何时被预先加载
+
+用户程序二进制本身在构建时被嵌入到内核镜像。运行时 `user_main` 调用 `KERNEL_EXECVE -> kernel_execve`（通过 `ebreak` 发起 `SYS_exec`），内核在 `syscall` 路径调用 `do_execve -> load_icode`。`load_icode` 在内核态为进程新建 mm/页表并把嵌入的二进制按段逐页拷贝到用户虚拟地址空间。在程序执行之前，所有需要的内容都已经加载到了内存中。
+
+2. 与常用操作系统的加载的区别
+
+ucore：二进制作为内核镜像的一部分预置到内存映像（无需文件系统/磁盘访问）；exec 时内核一次性为所有段分配页面并 memcpy 到用户页（立即加载，非按需加载）。
+
+常见操作系统：可执行文件存放在持久存储，通过文件系统读取（不是内核镜像内嵌）；exec 主要建立映射与元信息，实际页面在首次访问时从磁盘读入，或通过 file‑backed mmap 映射而非每次拷贝（按需加载）。
+
+3. 原因
+
+省去实现文件系统、块 I/O、swap、复杂按需加载逻辑，便于聚焦进程/内存/调度核心机制；所有用户程序随内核镜像提供，环境可控、测试/打分稳定；实验工程开销低，启动与实现更直接。
