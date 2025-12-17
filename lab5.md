@@ -264,13 +264,13 @@ tf->status = (sstatus & ~SSTATUS_SPP) | SSTATUS_SPIE; // 设置处理器状态�
     - 遍历当前进程的子进程列表（或查找指定 `pid` 的子进程），检查是否有子进程处于 `PROC_ZOMBIE` 状态
     
     - 若找到僵尸子进程
-
+      
       - 将子进程的 `exit_code` 写回用户提供的 `code_store`
-
+      
       - 在关中断保护区内从进程哈希表和父子链表中移除该子进程
-
+      
       - 释放子进程的内核资源（`put_kstack`、`kfree(proc)` 等由父进程负责真正回收）
-
+      
       - 返回（成功）并把结果通过 `syscall` 返回给用户态
     
     - 若存在子进程但无僵尸，则将当前进程置为睡眠，设置 `wait_state（WT_CHILD）`，调用 `schedule()` 阻塞，等待被唤醒后重试检查
@@ -290,9 +290,9 @@ tf->status = (sstatus & ~SSTATUS_SPP) | SSTATUS_SPIE; // 设置处理器状态�
     - 记录退出码并把进程状态设为 `PROC_ZOMBIE`
     
     - 在关中断保护区内处理父子关系：
-
+      
       - 若父进程在 `WT_CHILD`，唤醒父进程
-
+      
       - 将当前进程的所有子进程转移给 `initproc`，必要时唤醒 `initproc` 以便其回收孤儿僵尸
     
     - 调用 `schedule()` 切出（`do_exit` 不返回）
@@ -467,3 +467,73 @@ ucore：二进制作为内核镜像的一部分预置到内存映像（无需文
 3. 原因
 
 省去实现文件系统、块 I/O、swap、复杂按需加载逻辑，便于聚焦进程/内存/调度核心机制；所有用户程序随内核镜像提供，环境可控、测试/打分稳定；实验工程开销低，启动与实现更直接。
+
+### GDB调试
+
+> 1.调试页表查询过程
+> 
+> 2.调试系统调用以及返回
+
+- 调试页表查询过程，这里需要使用gdb调试正在调试ucore代码的qemu源码。为了实现这一操作，需要同步运行三个终端，我们分别将第一、二、三个终端页面称为T1、T2、T3。T1用于ucore，T3利用gdb跟踪ucore内核，T2利用gdb附加到qemu进程本身，调试qemu的源码。
+  
+  - 首先在T1`make debug`，然后在T2获取地址后输入`sudo gdb`启动调试，然后输入事先获取的地址进行连接。准备完成后输入`c`，等待T3接入。
+  
+  - 在T3输入`make gdb`启动调试，然后输入`set remotetimeout unlimited`，保证其能够在需要时一直等待T2工作，不直接报错。
+  
+  - 在T3为`kern_init`打上断点，运行到此处后输入`x/10i $pc`，查看其接下来10条指令。输出如下：
+    
+    ```bash
+    => 0xffffffffc020004a <kern_init>:      auipc   a0,0x97
+       0xffffffffc020004e <kern_init+4>:
+        addi        a0,a0,254
+       0xffffffffc0200052 <kern_init+8>:    auipc   a2,0x9b
+       0xffffffffc0200056 <kern_init+12>:
+        addi        a2,a2,1438
+       0xffffffffc020005a <kern_init+16>:
+        addi        sp,sp,-16
+       0xffffffffc020005c <kern_init+18>:
+        sub a2,a2,a0
+       0xffffffffc020005e <kern_init+20>:   li      a1,0
+       0xffffffffc0200060 <kern_init+22>:
+        sd  ra,8(sp)
+       0xffffffffc0200062 <kern_init+24>:
+        jal 0xffffffffc020580a <memset>
+       0xffffffffc0200066 <kern_init+28>:
+        jal 0xffffffffc02005b8 <dtb_init>
+    ```
+  
+  - 可以发现在地址`0xffffffffc0200060`处有一条sd指令，属于我们可以研究的访存指令。其中`8(sp)`就是其访问的虚拟地址。在此处打上断点后运行到这里，然后查看sp寄存器的值，就可以推算出对应的虚拟地址。操作后显示如下：
+    
+    ```bash
+    sp             0xffffffffc0209ff0       0xffffffffc0209ff0
+    ```
+  
+  - 因此sp寄存器的值是`0xffffffffc0209ff0`，其偏移8位就可以得到访问的虚拟地址，应为`0xffffffffc0209ff8`。回到T2，对我们需要观测的函数`tlb_fill`和`riscv_cpu_get_phys_page_debug`打上断点，这里知道了访问的虚拟地址，可以使用条件断点，只在这个地址触发，避免程序多次停在不必要的位置。
+  
+  - 打好断点后在T3输入si，可以发现T2停留在刚刚为`tlb_fill`打好的断点处：
+    
+    ```bash
+    [Switching to Thread 0x7956ad2d0640 (LWP 30225)]
+    
+    Thread 3 "qemu-system-ris" hit Breakpoint 1, tlb_fill (cpu=0x5d8f788d8e60, addr=18446744072637947896, size=8, access_type=MMU_DATA_STORE, mmu_idx=1, retaddr=133413179560261) at /home/os/qemu-4.1.1/accel/tcg/cputlb.c:871
+    871         CPUClass *cc = CPU_GET_CLASS(cpu);
+    ```
+  
+  - 输入`p/x addr`，可以观察到程序现在确实停留在`0xffffffffc0209ff8`。此外，观察到该函数需要尝试从 CPU 实例获取其类对象。继续运行，程序停留在`riscv_cpu_get_phys_page_debug`处，这是程序将虚拟地址转换为物理地址的核心函数。通过`step`、`next`等指令，可以深入观察这两个函数的运行逻辑。观察结束后输`c`，程序将si指令运行完成，等待lab5调试系统调用以及返回的实验。
+
+- 调试系统调用以及返回，这里同样需要使用双gdb进行调试。首先在T2输入`delete`将lab2实验中设置的断点全部清除，避免接下来的实验过程中被这些断点无效打断。
+  
+  - 在T3输入`break user/libs/syscall.c:18`，这里是`ecall`指令所在的位置。程序运行到此处后暂停，此时可以设置需要的断点以研究程序运行。此处为`helper_raise_exception`和`riscv_cpu_do_interrupt`设置断点，它们分别是异常触发和异常处理的函数。
+  
+  - 在`helper_raise_exception`处输入`step`进入函数内部，可以观察到如下输出：
+    
+    ```bash
+    riscv_raise_exception (env=0x5d8f788e1870, exception=65538, pc=0) at /home/os/qemu-4.1.1/target/riscv/op_helper.c:31
+    31          CPUState *cs = env_cpu(env);
+    ```
+  
+  - 推测在触发异常时，程序需要记录此时cpu的状态（如特权级等），在恢复后才能重置此时cpu的状态。同理可以研究`riscv_cpu_do_interrupt`的运行逻辑。
+  
+  - 接下来在程序中找到`sret`所在的位置，它位于`kern/trap/trapentry.S`的第133行，因此输入`b kern/trap/trapentry.S:133`为该函数打下断点。这里我们为`helper_sret`，`trans_sret`，`gen_helper_sret`，它们的功能分别是执行阶段的辅助函数、翻译阶段的翻译函数和代码生成的宏。
+  
+  - 这里主要发现了一个有趣的现象：程序在第一次经过`trans_sret`时触发了断点，但通过`step`和`next`逐步运行到下一个`trans_sret`时却没有显示命中了断点。这里个人的推测是对于同一条指令，qemu不会进行二次转译，而是直接使用了第一次翻译的结果。此处值得以后再深入进行探索。
